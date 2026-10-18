@@ -150,19 +150,45 @@ Return JSON with exactly these string keys:
 Auditor question: {question}"""
 
 
+class GeminiBusyError(Exception):
+    """Gemini is temporarily overloaded or rate-limited after all retries."""
+
+
+RETRYABLE_STATUS = (429, 500, 503, 504)
+RETRY_WAITS_SECONDS = (2, 5)  # waits between attempts: 3 attempts in total
+
+
+def _is_retryable(exc: Exception) -> bool:
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code in RETRYABLE_STATUS:
+        return True
+    text = str(exc).upper()
+    return any(marker in text for marker in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED"))
+
+
 def ask_gemini(prompt: str, api_key: str) -> dict:
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=get_setting("GEMINI_MODEL", DEFAULT_MODEL),
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            max_output_tokens=1024,
-        ),
-    )
+    response = None
+    for attempt in range(len(RETRY_WAITS_SECONDS) + 1):
+        try:
+            response = client.models.generate_content(
+                model=get_setting("GEMINI_MODEL", DEFAULT_MODEL),
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    max_output_tokens=1024,
+                ),
+            )
+            break
+        except Exception as exc:  # retry only temporary overload / rate-limit errors
+            if not _is_retryable(exc):
+                raise
+            if attempt == len(RETRY_WAITS_SECONDS):
+                raise GeminiBusyError(str(exc)) from exc
+            time.sleep(RETRY_WAITS_SECONDS[attempt])
     if not response.text:
         raise ValueError("Gemini returned an empty response.")
     data = json.loads(response.text)
@@ -251,7 +277,14 @@ def tab_ask(years: list[int]) -> None:
     with st.spinner("Asking Gemini to write the query..."):
         try:
             answer = ask_gemini(build_prompt(question.strip(), year), api_key)
-        except Exception as exc:  # network, quota, JSON errors
+        except GeminiBusyError:
+            st.warning(
+                "Gemini is busy right now (high demand or rate limit) and did not answer after "
+                "three attempts. Please wait a minute and click Ask again. "
+                "The Prohibited purchases dashboard does not use Gemini and works in the meantime."
+            )
+            return
+        except Exception as exc:  # network, invalid key, JSON errors
             st.error(f"Gemini could not answer the question: {exc}")
             return
 
