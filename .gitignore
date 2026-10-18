@@ -1,0 +1,19 @@
+# Secrets: never commit the API key
+.env
+.streamlit/secrets.toml
+
+# Python environment and cache
+.venv/
+__pycache__/
+*.pyc
+
+# Assignment answers and course material (kept private, not part of the app)
+submission/
+sql/
+results/
+Analytics_mindset_case_studies_PCard_assignment.docx
+~$*.docx
+
+# macOS / editor
+.DS_Store
+.vscode/
